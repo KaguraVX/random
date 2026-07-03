@@ -29,6 +29,7 @@ export async function ensureDatabase() {
   await query(`
     CREATE TABLE IF NOT EXISTS expenses (
       id text PRIMARY KEY,
+      user_id text NOT NULL,
       description text NOT NULL,
       amount numeric NOT NULL,
       category text NOT NULL,

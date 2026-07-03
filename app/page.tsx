@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from 'react';
+import { auth, createUserWithEmailAndPassword, signInWithEmailAndPassword, signInWithPopup, signOut, onAuthStateChanged, googleProvider, getIdToken } from '@/lib/firebaseClient';
 
 type Expense = {
   id: string;
@@ -9,6 +10,11 @@ type Expense = {
   category: string;
   date: string;
 };
+
+type UserState = {
+  uid: string;
+  email: string | null;
+} | null;
 
 const categories = ['Food', 'Transport', 'Bills', 'Shopping', 'Other'];
 
@@ -21,17 +27,38 @@ export default function HomePage() {
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [user, setUser] = useState<UserState>(null);
+  const [authMode, setAuthMode] = useState<'login' | 'signup'>('login');
+  const [authEmail, setAuthEmail] = useState('');
+  const [authPassword, setAuthPassword] = useState('');
+  const [authLoading, setAuthLoading] = useState(false);
 
   useEffect(() => {
-    fetchExpenses();
+    const unsubscribe = onAuthStateChanged(auth, async currentUser => {
+      if (currentUser) {
+        setUser({ uid: currentUser.uid, email: currentUser.email });
+        await fetchExpenses(currentUser);
+      } else {
+        setUser(null);
+        setExpenses([]);
+      }
+    });
+
+    return () => unsubscribe();
   }, []);
 
-  async function fetchExpenses() {
+  async function fetchExpenses(currentUser?: { uid: string }) {
     setLoading(true);
     setError('');
 
     try {
-      const response = await fetch('/api/expenses');
+      const token = currentUser ? await getIdToken((auth.currentUser as any)) : null;
+      const response = await fetch('/api/expenses', {
+        headers: {
+          Authorization: token ? `Bearer ${token}` : '',
+        },
+      });
+
       if (!response.ok) {
         throw new Error('Unable to load expenses.');
       }
@@ -44,7 +71,53 @@ export default function HomePage() {
     }
   }
 
+  async function handleAuthSubmit() {
+    setAuthLoading(true);
+    setError('');
+
+    try {
+      if (authMode === 'login') {
+        await signInWithEmailAndPassword(auth, authEmail, authPassword);
+      } else {
+        await createUserWithEmailAndPassword(auth, authEmail, authPassword);
+      }
+      setAuthEmail('');
+      setAuthPassword('');
+    } catch {
+      setError('Authentication failed. Check your credentials and try again.');
+    } finally {
+      setAuthLoading(false);
+    }
+  }
+
+  async function handleGoogleSignIn() {
+    setAuthLoading(true);
+    setError('');
+
+    try {
+      await signInWithPopup(auth, googleProvider);
+    } catch {
+      setError('Google sign-in failed.');
+    } finally {
+      setAuthLoading(false);
+    }
+  }
+
+  async function handleLogout() {
+    setError('');
+    try {
+      await signOut(auth);
+    } catch {
+      setError('Logout failed.');
+    }
+  }
+
   async function handleAddExpense() {
+    if (!user) {
+      setError('You must be logged in to add an expense.');
+      return;
+    }
+
     const parsedAmount = Number(amount);
     if (!description.trim() || !date || Number.isNaN(parsedAmount) || parsedAmount <= 0) {
       return;
@@ -54,10 +127,12 @@ export default function HomePage() {
     setError('');
 
     try {
+      const token = await getIdToken(auth.currentUser as any);
       const response = await fetch('/api/expenses', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
         },
         body: JSON.stringify({
           description: description.trim(),
@@ -86,13 +161,20 @@ export default function HomePage() {
   }
 
   async function handleRemove(id: string) {
+    if (!user) {
+      setError('You must be logged in to remove an expense.');
+      return;
+    }
+
     setError('');
 
     try {
+      const token = await getIdToken(auth.currentUser as any);
       const response = await fetch('/api/expenses', {
         method: 'DELETE',
         headers: {
           'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
         },
         body: JSON.stringify({ id }),
       });
@@ -131,6 +213,99 @@ export default function HomePage() {
 
         <section className="grid gap-8 lg:grid-cols-[1.35fr_0.65fr]">
           <div className="space-y-6 rounded-3xl bg-slate-900/80 p-8 ring-1 ring-slate-700">
+            <div className="rounded-3xl bg-slate-950/80 p-6 ring-1 ring-slate-700">
+              <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <h2 className="text-2xl font-semibold">
+                    {user ? 'Welcome back' : 'Sign in to your tracker'}
+                  </h2>
+                  <p className="mt-2 text-sm text-slate-400">
+                    {user
+                      ? `Logged in as ${user.email}`
+                      : 'Use email/password or Google to access your personal expense tracker.'}
+                  </p>
+                </div>
+                {user ? (
+                  <button
+                    type="button"
+                    onClick={handleLogout}
+                    className="rounded-2xl bg-rose-500 px-5 py-3 text-sm font-semibold text-slate-950 transition hover:bg-rose-400"
+                  >
+                    Sign out
+                  </button>
+                ) : null}
+              </div>
+
+              {!user ? (
+                <div className="mt-6 grid gap-4">
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <button
+                      type="button"
+                      onClick={() => setAuthMode('login')}
+                      className={`rounded-2xl px-4 py-3 text-sm font-semibold transition ${
+                        authMode === 'login'
+                          ? 'bg-cyan-500 text-slate-950'
+                          : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+                      }`}
+                    >
+                      Login
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setAuthMode('signup')}
+                      className={`rounded-2xl px-4 py-3 text-sm font-semibold transition ${
+                        authMode === 'signup'
+                          ? 'bg-cyan-500 text-slate-950'
+                          : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+                      }`}
+                    >
+                      Sign up
+                    </button>
+                  </div>
+
+                  <label className="space-y-2">
+                    <span className="text-sm text-slate-300">Email</span>
+                    <input
+                      type="email"
+                      value={authEmail}
+                      onChange={e => setAuthEmail(e.target.value)}
+                      className="w-full rounded-2xl border border-slate-700 bg-slate-950 px-4 py-3 text-slate-100 outline-none transition focus:border-cyan-400"
+                      placeholder="you@example.com"
+                    />
+                  </label>
+
+                  <label className="space-y-2">
+                    <span className="text-sm text-slate-300">Password</span>
+                    <input
+                      type="password"
+                      value={authPassword}
+                      onChange={e => setAuthPassword(e.target.value)}
+                      className="w-full rounded-2xl border border-slate-700 bg-slate-950 px-4 py-3 text-slate-100 outline-none transition focus:border-cyan-400"
+                      placeholder="********"
+                    />
+                  </label>
+
+                  <button
+                    type="button"
+                    onClick={handleAuthSubmit}
+                    disabled={authLoading}
+                    className="rounded-2xl bg-cyan-500 px-6 py-3 text-sm font-semibold text-slate-950 transition hover:bg-cyan-400 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {authLoading ? 'Working…' : authMode === 'login' ? 'Login' : 'Create account'}
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleGoogleSignIn}
+                    disabled={authLoading}
+                    className="rounded-2xl bg-slate-800 px-6 py-3 text-sm font-semibold text-slate-100 transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {authLoading ? 'Working…' : 'Continue with Google'}
+                  </button>
+                </div>
+              ) : null}
+            </div>
+
             <div className="space-y-4">
               <h2 className="text-2xl font-semibold">Add a new expense</h2>
               <div className="grid gap-4 sm:grid-cols-2">
