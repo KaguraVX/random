@@ -12,30 +12,100 @@ type Expense = {
 
 const categories = ['Food', 'Transport', 'Bills', 'Shopping', 'Other'];
 
-const STORAGE_KEY = 'expense-tracker-data';
-
 export default function HomePage() {
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [description, setDescription] = useState('');
   const [amount, setAmount] = useState('');
   const [category, setCategory] = useState(categories[0]);
   const [date, setDate] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
 
   useEffect(() => {
-    const stored = typeof window !== 'undefined' ? window.localStorage.getItem(STORAGE_KEY) : null;
-    if (stored) {
-      try {
-        setExpenses(JSON.parse(stored));
-      } catch {
-        setExpenses([]);
-      }
-    }
+    fetchExpenses();
   }, []);
 
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(expenses));
-  }, [expenses]);
+  async function fetchExpenses() {
+    setLoading(true);
+    setError('');
+
+    try {
+      const response = await fetch('/api/expenses');
+      if (!response.ok) {
+        throw new Error('Unable to load expenses.');
+      }
+      const data: Expense[] = await response.json();
+      setExpenses(data);
+    } catch {
+      setError('Failed to load expenses. Confirm your Neon DB is configured in Vercel.');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleAddExpense() {
+    const parsedAmount = Number(amount);
+    if (!description.trim() || !date || Number.isNaN(parsedAmount) || parsedAmount <= 0) {
+      return;
+    }
+
+    setSaving(true);
+    setError('');
+
+    try {
+      const response = await fetch('/api/expenses', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          description: description.trim(),
+          amount: parsedAmount,
+          category,
+          date,
+        }),
+      });
+
+      if (!response.ok) {
+        const body = await response.json().catch(() => null);
+        throw new Error(body?.error || 'Could not save expense.');
+      }
+
+      const savedExpense: Expense = await response.json();
+      setExpenses(prev => [savedExpense, ...prev]);
+      setDescription('');
+      setAmount('');
+      setCategory(categories[0]);
+      setDate('');
+    } catch {
+      setError('Failed to save expense. Confirm your Neon DB URL is set in Vercel.');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleRemove(id: string) {
+    setError('');
+
+    try {
+      const response = await fetch('/api/expenses', {
+        method: 'DELETE',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ id }),
+      });
+
+      if (!response.ok) {
+        throw new Error('Could not remove expense.');
+      }
+
+      setExpenses(prev => prev.filter(expense => expense.id !== id));
+    } catch {
+      setError('Failed to remove expense.');
+    }
+  }
 
   const total = useMemo(
     () => expenses.reduce((sum, expense) => sum + expense.amount, 0),
@@ -49,39 +119,13 @@ export default function HomePage() {
     }, {});
   }, [expenses]);
 
-  function handleAddExpense() {
-    const parsedAmount = Number(amount);
-    if (!description.trim() || !date || Number.isNaN(parsedAmount) || parsedAmount <= 0) {
-      return;
-    }
-
-    setExpenses(prev => [
-      {
-        id: crypto.randomUUID(),
-        description: description.trim(),
-        amount: parsedAmount,
-        category,
-        date,
-      },
-      ...prev,
-    ]);
-    setDescription('');
-    setAmount('');
-    setCategory(categories[0]);
-    setDate('');
-  }
-
-  function handleRemove(id: string) {
-    setExpenses(prev => prev.filter(expense => expense.id !== id));
-  }
-
   return (
     <main className="min-h-screen bg-slate-950 text-slate-100 px-4 py-10 sm:px-6 lg:px-8">
       <div className="mx-auto max-w-5xl">
         <header className="mb-10 rounded-3xl bg-slate-900/80 p-8 shadow-xl shadow-slate-900/20 ring-1 ring-slate-700">
           <h1 className="text-4xl font-semibold">Expense Tracker</h1>
           <p className="mt-3 max-w-2xl text-slate-300 sm:text-lg">
-            Track your spending with a simple local app deployed on Vercel.
+            Track your spending with Neon and Vercel.
           </p>
         </header>
 
@@ -138,15 +182,24 @@ export default function HomePage() {
               <button
                 type="button"
                 onClick={handleAddExpense}
-                className="inline-flex items-center justify-center rounded-2xl bg-cyan-500 px-6 py-3 text-sm font-semibold text-slate-950 transition hover:bg-cyan-400"
+                disabled={saving}
+                className="inline-flex items-center justify-center rounded-2xl bg-cyan-500 px-6 py-3 text-sm font-semibold text-slate-950 transition hover:bg-cyan-400 disabled:cursor-not-allowed disabled:opacity-50"
               >
-                Save expense
+                {saving ? 'Saving...' : 'Save expense'}
               </button>
             </div>
 
+            {error ? (
+              <div className="rounded-3xl bg-rose-950/80 p-4 text-rose-200 ring-1 ring-rose-700">
+                {error}
+              </div>
+            ) : null}
+
             <div className="rounded-3xl bg-slate-950/80 p-6 ring-1 ring-slate-700">
               <h3 className="text-xl font-semibold">Recent expenses</h3>
-              {expenses.length === 0 ? (
+              {loading ? (
+                <p className="mt-4 text-slate-400">Loading expenses…</p>
+              ) : expenses.length === 0 ? (
                 <p className="mt-4 text-slate-400">No expenses yet. Add a transaction to get started.</p>
               ) : (
                 <div className="mt-4 space-y-3">
@@ -157,7 +210,9 @@ export default function HomePage() {
                     >
                       <div>
                         <p className="font-semibold text-slate-100">{expense.description}</p>
-                        <p className="text-sm text-slate-400">{expense.category} • {expense.date}</p>
+                        <p className="text-sm text-slate-400">
+                          {expense.category} • {expense.date}
+                        </p>
                       </div>
                       <div className="flex items-center gap-3">
                         <p className="text-lg font-semibold text-cyan-300">${expense.amount.toFixed(2)}</p>
